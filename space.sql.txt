@@ -1,0 +1,79 @@
+spool c:\space.txt
+set echo off
+set linesize 190
+set pagesize 24
+set ver off
+set sqlcase upper
+column Free(%) format 999
+
+select  d.ts# as "ts#",
+	substr(b.tablespace_name,1,20) "Tablespaces",
+       (b.BYTES/1048576) as "TotalMB",
+       (b.BYTES/1048576)-(c.BYTES/1048576) as "UsedMB",
+       (c.BYTES/1048576) as "FreeMB",
+       ((c.BYTES/b.BYTES)*100) as "Free(%)"			
+from dba_tablespaces a,
+(select tablespace_name,sum(bytes) as "BYTES" 
+ from dba_data_files 
+ group by tablespace_name ) b,
+(select tablespace_name,sum(bytes) as "BYTES" 
+ from dba_free_space  
+ group by tablespace_name) c,
+v$tablespace d
+where
+	 	d.name		  = a.tablespace_name
+	and	a.tablespace_name = b.tablespace_name(+)
+	and 	b.tablespace_name = c.tablespace_name(+)
+order by 6 desc;
+
+column name format a60
+undefine ts
+accept ts prompt "Forneça o ID do Tablespace desejado:" 
+
+select 	file#, 
+	status, 
+	enabled, 
+	bytes/1048576 as "Bytes", 
+	name, 
+	block_size 
+from v$datafile
+where ts# = &ts;
+
+WITH my_ddf AS
+    (
+        SELECT file_id, tablespace_name, file_name,
+               DECODE (autoextensible,
+                       'YES', GREATEST (BYTES, maxbytes),
+                      BYTES
+                      ) mysize,
+              DECODE (autoextensible,
+                      'YES', CASE
+                         WHEN (maxbytes > BYTES)
+                            THEN (maxbytes - BYTES)
+                         ELSE 0
+                      END,
+                      0
+                     ) growth
+         FROM dba_data_files)
+SELECT   my_ddf.tablespace_name "Tablespace",
+         ROUND (SUM (my_ddf.mysize) / (1024 * 1024 * 1024),2) "Totsize(GB)",
+         ROUND (SUM (growth) / (1024 * 1024 * 1024 ),2) "Growth(GB)",
+         ROUND ((SUM (NVL (freebytes, 0))) / (1024 * 1024 * 1024 ),2) "dfs(GB)",
+         ROUND ((SUM (NVL (freebytes, 0)) + SUM (growth)) / (1024 * 1024* 1024 )
+              ,2 ) "Totfree(GB)",
+         100 - (ROUND (  (SUM (NVL (freebytes, 0)) + SUM (growth))
+                 / SUM (my_ddf.mysize)
+                 * 100,2)
+               ) "Perc(%)"
+    FROM my_ddf, (SELECT   file_id, SUM (BYTES) freebytes
+                      FROM dba_free_space
+                  GROUP BY file_id) dfs
+   WHERE my_ddf.file_id = dfs.file_id(+)
+GROUP BY my_ddf.tablespace_name
+ORDER BY 6 desc ;
+spool off
+set echo off
+set pagesize 0
+set ver on
+set sqlcase mixed
+/
